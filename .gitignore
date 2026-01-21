@@ -1,1 +1,4 @@
 .env
+script
+logs/
+__pycache__/

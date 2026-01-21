@@ -1,12 +1,14 @@
+import sys
+sys.path.append('/opt/airflow/scripts')
+
 from datetime import datetime, timedelta
 from airflow import DAG
-from airflow.operators.python import PythonOperator
-from airflow.providers.mysql.operators.mysql import MySqlOperator
-from airflow.providers.postgres.operators.postgres import PostgresOperator
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
-from scripts.tasks.ingest_csv_to_mysql import ingest_csv_to_mysql
-from scripts.tasks.validate_staging_data import validate_staging_data
-from scripts.tasks.transform_and_compute_kpis import transform_and_compute_kpis
+from tasks.ingest_csv_to_mysql import ingest_csv_to_mysql
+from tasks.validate_staging_data import validate_staging_data
+from tasks.transform_and_compute_kpis import transform_and_compute_kpis
 
 default_args = {
     'owner': 'data_engineer',
@@ -21,7 +23,7 @@ with DAG(
     dag_id='flight_price_analysis_bangladesh',
     default_args=default_args,
     description='End-to-end pipeline: Ingest -> Validate -> Transform -> Load & Compute KPIs',
-    schedule_interval=None,              # Using Manual trigger for now for now, but '@daily' is an option
+    schedule=None,              # Using Manual trigger for now for now, but '@daily' is an option
     start_date=datetime(2025, 3, 1),
     catchup=False,
     tags=['flight_prices', 'bangladesh', 'analytics'],

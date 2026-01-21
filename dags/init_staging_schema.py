@@ -1,6 +1,6 @@
 from datetime import datetime
 from airflow import DAG
-from airflow.providers.mysql.operators.mysql import MySqlOperator
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
 with DAG(
     dag_id='init_staging_schema',
@@ -11,9 +11,9 @@ with DAG(
     default_args={'owner': 'data_engineer'},
 ) as dag:
 
-    create_raw_table = MySqlOperator(
+    create_raw_table = SQLExecuteQueryOperator(
         task_id='create_flight_prices_raw',
-        mysql_conn_id='mysql_staging',
+        conn_id='mysql_staging',
         sql="""
         CREATE TABLE IF NOT EXISTS staging.flight_prices_raw (
             id                    BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -49,9 +49,9 @@ with DAG(
         """
     )
 
-    create_quarantine_table = MySqlOperator(
+    create_quarantine_table = SQLExecuteQueryOperator(
         task_id='create_flight_prices_quarantine',
-        mysql_conn_id='mysql_staging',
+        conn_id='mysql_staging',
         sql="""
         CREATE TABLE IF NOT EXISTS staging.flight_prices_quarantine (
             -- Same structure as raw table + quarantine-specific columns

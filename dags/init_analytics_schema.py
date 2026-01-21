@@ -1,7 +1,7 @@
 
 from datetime import datetime
 from airflow import DAG
-from airflow.providers.postgres.operators.postgres import PostgresOperator
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
 with DAG(
     dag_id='init_analytics_schema',
@@ -12,9 +12,9 @@ with DAG(
     default_args={'owner': 'data_engineer'},
 ) as dag:
 
-    create_fact_table = PostgresOperator(
+    create_fact_table = SQLExecuteQueryOperator(
         task_id='create_fact_flight_prices',
-        postgres_conn_id='postgres_analytics',
+        conn_id='postgres_analytics',
         sql="""
         CREATE TABLE IF NOT EXISTS analytics.fact_flight_prices (
             flight_price_id       BIGINT PRIMARY KEY,
@@ -42,9 +42,9 @@ with DAG(
         """
     )
 
-    create_kpi_avg_airline = PostgresOperator(
+    create_kpi_avg_airline = SQLExecuteQueryOperator(
         task_id='create_kpi_avg_fare_by_airline',
-        postgres_conn_id='postgres_analytics',
+        conn_id='postgres_analytics',
         sql="""
         CREATE TABLE IF NOT EXISTS analytics.kpi_avg_fare_by_airline (
             airline               VARCHAR(100)      PRIMARY KEY,
@@ -55,9 +55,9 @@ with DAG(
         """
     )
 
-    create_kpi_seasonal = PostgresOperator(
+    create_kpi_seasonal = SQLExecuteQueryOperator(
         task_id='create_kpi_seasonal_variation',
-        postgres_conn_id='postgres_analytics',
+        conn_id='postgres_analytics',
         sql="""
         CREATE TABLE IF NOT EXISTS analytics.kpi_seasonal_variation (
             seasonality           VARCHAR(50),
@@ -70,9 +70,9 @@ with DAG(
         """
     )
 
-    create_kpi_bookings = PostgresOperator(
+    create_kpi_bookings = SQLExecuteQueryOperator(
         task_id='create_kpi_booking_count_by_airline',
-        postgres_conn_id='postgres_analytics',
+        conn_id='postgres_analytics',
         sql="""
         CREATE TABLE IF NOT EXISTS analytics.kpi_booking_count_by_airline (
             airline               VARCHAR(100)      PRIMARY KEY,
@@ -82,9 +82,9 @@ with DAG(
         """
     )
 
-    create_kpi_routes = PostgresOperator(
+    create_kpi_routes = SQLExecuteQueryOperator(
         task_id='create_kpi_top_routes',
-        postgres_conn_id='postgres_analytics',
+        conn_id='postgres_analytics',
         sql="""
         CREATE TABLE IF NOT EXISTS analytics.kpi_top_routes (
             source_iata           VARCHAR(10),

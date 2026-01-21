@@ -1,7 +1,7 @@
 
 from datetime import datetime
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 from airflow.utils.session import create_session
 from airflow.models import Connection, Variable
 from dotenv import load_dotenv
@@ -64,7 +64,7 @@ with DAG(
     dag_id='init_airflow_connections',
     default_args=default_args,
     description='Initialize Airflow connections from .env',
-    schedule_interval=None,
+    schedule=None,
     catchup=False,
     tags=['setup', 'connections'],
     max_active_runs=1,
