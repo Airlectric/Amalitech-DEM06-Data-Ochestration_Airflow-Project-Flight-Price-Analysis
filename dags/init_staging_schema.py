@@ -15,23 +15,23 @@ with DAG(
         task_id='create_flight_prices_raw',
         conn_id='mysql_staging',
         sql="""
-        CREATE TABLE IF NOT EXISTS staging.flight_prices_raw (
+        CREATE TABLE IF NOT EXISTS staging_db.flight_prices_raw (
             id                    BIGINT AUTO_INCREMENT PRIMARY KEY,
             airline               VARCHAR(100)        NOT NULL,
             source                VARCHAR(10)         NOT NULL,
             source_name           VARCHAR(150),
             destination           VARCHAR(10)         NOT NULL,
             destination_name      VARCHAR(150),
-            departure_datetime    DATETIME            NOT NULL,
-            arrival_datetime      DATETIME            NOT NULL,
-            duration_hours        DECIMAL(6,2)        NOT NULL,
+            departure_date_time    DATETIME            NOT NULL,
+            arrival_date_time      DATETIME            NOT NULL,
+            duration_hrs       DECIMAL(6,2)        NOT NULL,
             stopovers             VARCHAR(20)         NOT NULL,
             aircraft_type         VARCHAR(100),
             class                 VARCHAR(50)         NOT NULL,
             booking_source        VARCHAR(100),
             base_fare_bdt         DECIMAL(12,2)       NOT NULL,
             tax_surcharge_bdt     DECIMAL(12,2)       NOT NULL,
-            total_fare_bdt        DECIMAL(12,2)       NOT NULL,
+            total_fare_bdt      DECIMAL(12,2)       NOT NULL,
             seasonality           VARCHAR(50)         NOT NULL,
             days_before_departure INT                 NOT NULL,
             
@@ -43,7 +43,7 @@ with DAG(
             validation_message    TEXT,
             
             INDEX idx_route       (source, destination),
-            INDEX idx_departure   (departure_datetime),
+            INDEX idx_departure   (departure_date_time),
             INDEX idx_seasonality (seasonality)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         """
@@ -53,7 +53,7 @@ with DAG(
         task_id='create_flight_prices_quarantine',
         conn_id='mysql_staging',
         sql="""
-        CREATE TABLE IF NOT EXISTS staging.flight_prices_quarantine (
+        CREATE TABLE IF NOT EXISTS staging_db.flight_prices_quarantine (
             -- Same structure as raw table + quarantine-specific columns
             id                    BIGINT,
             airline               VARCHAR(100)        NOT NULL,
@@ -61,16 +61,16 @@ with DAG(
             source_name           VARCHAR(150),
             destination           VARCHAR(10)         NOT NULL,
             destination_name      VARCHAR(150),
-            departure_datetime    DATETIME            NOT NULL,
-            arrival_datetime      DATETIME            NOT NULL,
-            duration_hours        DECIMAL(6,2)        NOT NULL,
+            departure_date_time   DATETIME            NOT NULL,
+            arrival_date_time      DATETIME            NOT NULL,
+            duration_hrs       DECIMAL(6,2)        NOT NULL,
             stopovers             VARCHAR(20)         NOT NULL,
             aircraft_type         VARCHAR(100),
             class                 VARCHAR(50)         NOT NULL,
             booking_source        VARCHAR(100),
             base_fare_bdt         DECIMAL(12,2)       NOT NULL,
             tax_surcharge_bdt     DECIMAL(12,2)       NOT NULL,
-            total_fare_bdt        DECIMAL(12,2)       NOT NULL,
+            total_fare_bdt      DECIMAL(12,2)       NOT NULL,
             seasonality           VARCHAR(50)         NOT NULL,
             days_before_departure INT                 NOT NULL,
             

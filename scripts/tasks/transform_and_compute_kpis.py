@@ -18,14 +18,14 @@ def transform_and_compute_kpis(**context):
         airline,
         source,
         destination,
-        departure_datetime,
+        departure_date_time,
         class,
         seasonality,
         days_before_departure,
         base_fare_bdt,
         tax_surcharge_bdt,
         total_fare_bdt
-    FROM staging.flight_prices_raw
+    FROM staging_db.flight_prices_raw
     WHERE is_valid = TRUE
     """
 
@@ -41,15 +41,15 @@ def transform_and_compute_kpis(**context):
     # 2. Core transformations
     df = df.assign(
         # Ensuring total_fare is corrected
-        total_fare_bdt_corrected = lambda x: x['base_fare_bdt'] + x['tax_surcharge_bdt'],
+        total_fare_bdt__corrected = lambda x: x['base_fare_bdt'] + x['tax_surcharge_bdt'],
         
         # Fix potential data issues
-        total_fare_bdt = lambda x: x['total_fare_bdt_corrected'],  # overwriting with corrected
+        total_fare_bdt= lambda x: x['total_fare_bdt__corrected'],  # overwriting with corrected
         
         # Date dimensions
-        departure_date  = lambda x: x['departure_datetime'].dt.date,
-        departure_month = lambda x: x['departure_datetime'].dt.month,
-        departure_year  = lambda x: x['departure_datetime'].dt.year,
+        departure_date  = lambda x: x['departure_date_time'].dt.date,
+        departure_month = lambda x: x['departure_date_time'].dt.month,
+        departure_year  = lambda x: x['departure_date_time'].dt.year,
         
         # Peak season flag
         is_peak_season = lambda x: x['seasonality'].isin(PEAK_SEASONS),
@@ -60,7 +60,7 @@ def transform_and_compute_kpis(**context):
     )
 
     # Dropping temporary columns
-    df = df.drop(columns=['total_fare_bdt_corrected', 'departure_datetime'])
+    df = df.drop(columns=['total_fare_bdt__corrected', 'departure_date_time'])
 
     # 3. Loading enriched data to PostgreSQL
     pg_engine = pg_hook.get_sqlalchemy_engine()
@@ -68,38 +68,38 @@ def transform_and_compute_kpis(**context):
     df.to_sql(
         name='fact_flight_prices',
         con=pg_engine,
-        schema='analytics',
+        schema='analytics_db',
         if_exists='append',
         index=False,
         chunksize=10000,
         method='multi'
     )
 
-    logger.info(f"Loaded {len(df):,} enriched records to analytics.fact_flight_prices")
+    logger.info(f"Loaded {len(df):,} enriched records to fact_flight_prices")
 
     # 4. Compute & upsert KPIs using PostgreSQL upsert pattern
     upsert_queries = [
         # Average Fare by Airline
         """
-        INSERT INTO analytics.kpi_avg_fare_by_airline
+        INSERT INTO kpi_avg_fare_by_airline
             (airline, avg_total_fare_bdt, record_count, last_updated)
         SELECT 
             airline,
             ROUND(AVG(total_fare_bdt), 2),
             COUNT(*),
             CURRENT_TIMESTAMP
-        FROM analytics.fact_flight_prices
+        FROM fact_flight_prices
         GROUP BY airline
         ON CONFLICT (airline) 
             DO UPDATE SET
-                avg_total_fare_bdt = EXCLUDED.avg_total_fare_bdt,
+                avg_total_fare_bdt= EXCLUDED.avg_total_fare_bdt,
                 record_count = EXCLUDED.record_count,
                 last_updated = EXCLUDED.last_updated;
         """,
 
         # Seasonal Variation
         """
-        INSERT INTO analytics.kpi_seasonal_variation
+        INSERT INTO kpi_seasonal_variation
             (seasonality, is_peak_season, avg_total_fare_bdt, record_count, last_updated)
         SELECT 
             seasonality,
@@ -107,24 +107,24 @@ def transform_and_compute_kpis(**context):
             ROUND(AVG(total_fare_bdt), 2),
             COUNT(*),
             CURRENT_TIMESTAMP
-        FROM analytics.fact_flight_prices
+        FROM fact_flight_prices
         GROUP BY seasonality, is_peak_season
         ON CONFLICT (seasonality, is_peak_season) 
             DO UPDATE SET
-                avg_total_fare_bdt = EXCLUDED.avg_total_fare_bdt,
+                avg_total_fare_bdt= EXCLUDED.avg_total_fare_bdt,
                 record_count = EXCLUDED.record_count,
                 last_updated = EXCLUDED.last_updated;
         """,
 
         # Booking Count by Airline (simple count of records)
         """
-        INSERT INTO analytics.kpi_booking_count_by_airline
+        INSERT INTO kpi_booking_count_by_airline
             (airline, booking_count, last_updated)
         SELECT 
             airline,
             COUNT(*),
             CURRENT_TIMESTAMP
-        FROM analytics.fact_flight_prices
+        FROM fact_flight_prices
         GROUP BY airline
         ON CONFLICT (airline) 
             DO UPDATE SET
@@ -134,7 +134,7 @@ def transform_and_compute_kpis(**context):
 
         # Top Routes
         """
-        INSERT INTO analytics.kpi_top_routes
+        INSERT INTO kpi_top_routes
             (source_iata, destination_iata, route_name, booking_count, avg_total_fare_bdt, last_updated)
         SELECT 
             source_iata,
@@ -143,14 +143,14 @@ def transform_and_compute_kpis(**context):
             COUNT(*) AS booking_count,
             ROUND(AVG(total_fare_bdt), 2) AS avg_total_fare_bdt,
             CURRENT_TIMESTAMP
-        FROM analytics.fact_flight_prices
+        FROM fact_flight_prices
         GROUP BY source_iata, destination_iata
         ORDER BY booking_count DESC
         LIMIT 20
         ON CONFLICT (source_iata, destination_iata) 
             DO UPDATE SET
                 booking_count = EXCLUDED.booking_count,
-                avg_total_fare_bdt = EXCLUDED.avg_total_fare_bdt,
+                avg_total_fare_bdt= EXCLUDED.avg_total_fare_bdt,
                 route_name = EXCLUDED.route_name,
                 last_updated = EXCLUDED.last_updated;
         """

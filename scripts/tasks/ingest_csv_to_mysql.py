@@ -45,7 +45,7 @@ def ingest_csv_to_mysql(**context):
     )
 
     # Renaming columns to snake_case (safer for SQL)
-    df.columns = df.columns.str.strip().str.lower().str.replace(r'[\s&()-]+', '_', regex=True)
+    df.columns = df.columns.str.strip().str.lower().str.replace(r'[\s&()-]+', '_', regex=True).str.strip('_')
 
     # Convert datetime columns
     for col in ['departure_date_time', 'arrival_date_time']:
@@ -67,7 +67,7 @@ def ingest_csv_to_mysql(**context):
         df.to_sql(
             name='flight_prices_raw',
             con=engine,
-            schema='staging',
+            schema='staging_db',
             if_exists='append',
             index=False,
             chunksize=5000,           # important for memory and the db capacity to help avoid overload
