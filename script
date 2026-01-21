@@ -1,6 +1,7 @@
 airflow-api-server-1     |   ____________       _____________
 airflow-api-server-1     |  ____    |__( )_________  __/__  /________      __
-airflow-api-server-1     | ____  /| |_  /__  ___/_  /_ __  /_  __ \_ | /| / /
+airflow-api-server-1     | ____  /| |_  /__  ___/_  /_ __  /_  __ \_ | /| / /                                               
 airflow-api-server-1     | ___  ___ |  / _  /   _  __/ _  / / /_/ /_ |/ |/ /
-airflow-api-server-1     |  _/_/  |_/_/  /_/    /_/    /_/  \____/____/|__/
-airflow-api-server-1     | Simple auth manager | Password for user 'admin': DtDYtUkGvGQpZfD2
+airflow-api-server-1     |  _/_/  |_/_/  /_/    /_/    /_/  \____/____/|__/                                                 
+airflow-api-server-1     | Simple auth manager | Password for user 'admin': VyRwXdtHGEhYd34z                                
+airflow-api-server-1     | INFO:     127.0.0.1:52528 - "GET /api/v2/monitor/health HTTP/1.1" 200 OK  

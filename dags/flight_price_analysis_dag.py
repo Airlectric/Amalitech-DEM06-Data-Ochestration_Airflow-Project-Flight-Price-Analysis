@@ -38,19 +38,16 @@ with DAG(
     ingest = PythonOperator(
         task_id='ingest_csv_to_mysql',
         python_callable=ingest_csv_to_mysql,
-        provide_context=True,
     )
 
     validate = PythonOperator(
         task_id='validate_staging_data',
         python_callable=validate_staging_data,
-        provide_context=True,
     )
 
     transform_and_kpis = PythonOperator(
         task_id='transform_and_compute_kpis',
         python_callable=transform_and_compute_kpis,
-        provide_context=True,
     )
 
     finish = PythonOperator(
