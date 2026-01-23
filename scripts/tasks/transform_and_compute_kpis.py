@@ -16,8 +16,8 @@ def transform_and_compute_kpis(**context):
     SELECT 
         id AS flight_price_id,
         airline,
-        source,
-        destination,
+        source AS source_iata,
+        destination AS destination_iata,
         departure_date_time,
         class,
         seasonality,
@@ -68,7 +68,7 @@ def transform_and_compute_kpis(**context):
     df.to_sql(
         name='fact_flight_prices',
         con=pg_engine,
-        schema='analytics_db',
+        # schema='analytics_db',
         if_exists='append',
         index=False,
         chunksize=10000,
