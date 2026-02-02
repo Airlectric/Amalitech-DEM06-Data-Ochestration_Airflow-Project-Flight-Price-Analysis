@@ -1,63 +1,33 @@
+import sys
+sys.path.append('/opt/airflow/scripts')
 
 from airflow.providers.mysql.hooks.mysql import MySqlHook
 from airflow.exceptions import AirflowSkipException, AirflowException
+from utils.sql_loader import load_sql_statements, load_named_sql_queries
 import logging
 
 logger = logging.getLogger(__name__)
 
-SQL_VALIDATION_CHECKS = [
-    """
-    UPDATE staging_db.flight_prices_raw
-    SET is_valid = FALSE,
-        validation_message = CONCAT(COALESCE(validation_message, ''), '; Missing required column values')
-    WHERE airline IS NULL
-       OR source IS NULL
-       OR destination IS NULL
-       OR base_fare_bdt IS NULL
-       OR tax_surcharge_bdt IS NULL
-       OR total_fare_bdt IS NULL
-    """,
-    """
-    UPDATE staging_db.flight_prices_raw
-    SET is_valid = FALSE,
-        validation_message = CONCAT(COALESCE(validation_message, ''), '; Negative or zero fare')
-    WHERE base_fare_bdt <= 0
-       OR tax_surcharge_bdt < 0
-       OR total_fare_bdt <= 0
-    """,
-    """
-    UPDATE staging_db.flight_prices_raw
-    SET is_valid = FALSE,
-        validation_message = CONCAT(COALESCE(validation_message, ''), '; Invalid duration')
-    WHERE duration_hrs <= 0 OR duration_hrs > 40
-    """,
-    """
-    UPDATE staging_db.flight_prices_raw
-    SET is_valid = FALSE,
-        validation_message = CONCAT(COALESCE(validation_message, ''), '; Days before departure out of range')
-    WHERE days_before_departure < 0 OR days_before_departure > 365
-    """,
-    """
-    UPDATE staging_db.flight_prices_raw
-    SET is_valid = FALSE,
-        validation_message = CONCAT(COALESCE(validation_message, ''), '; Departure after arrival')
-    WHERE departure_date_time >= arrival_date_time
-    """
-]
 
 def validate_staging_data(**context):
     """Run quality rules and quarantine invalid records then continue pipeline"""
     mysql_hook = MySqlHook(mysql_conn_id='mysql_staging')
-
-    total_rows = mysql_hook.get_first("SELECT COUNT(*) FROM staging_db.flight_prices_raw")[0]
+    
+    # Load queries from SQL files
+    staging_queries = load_named_sql_queries('staging', 'queries')
+    
+    # Get total row count
+    total_rows = mysql_hook.get_first(staging_queries['count_total_rows'])[0]
     logger.info(f"Starting validation on {total_rows:,} rows...")
 
+    # Load and run validation checks from SQL file
+    validation_checks = load_sql_statements('staging', 'validation_checks')
+    
     affected_rows_total = 0
-
-    for i, sql in enumerate(SQL_VALIDATION_CHECKS, 1):
+    for i, sql in enumerate(validation_checks, 1):
         try:
             mysql_hook.run(sql, autocommit=True)
-            affected = mysql_hook.get_first("SELECT ROW_COUNT()")[0]
+            affected = mysql_hook.get_first(staging_queries['get_row_count'])[0]
             affected_rows_total += affected
             logger.info(f"Check #{i}: marked {affected:,} rows as invalid")
         except Exception as e:
@@ -65,40 +35,26 @@ def validate_staging_data(**context):
             raise  # syntax/db errors should still fail
 
     # Final stats
-    invalid_count = mysql_hook.get_first(
-        "SELECT COUNT(*) FROM staging_db.flight_prices_raw WHERE is_valid = FALSE"
-    )[0]
-
+    invalid_count = mysql_hook.get_first(staging_queries['count_invalid_rows'])[0]
     invalid_pct = round(invalid_count / total_rows * 100, 2) if total_rows > 0 else 0
 
     logger.info(f"Validation finished. Invalid: {invalid_count:,} ({invalid_pct}%)")
 
-    # Quarantine logic – move invalid records to separate table
+    # Quarantine logic – upsert invalid records to separate table
     if invalid_count > 0:
         logger.warning(f"Found {invalid_count:,} invalid records → quarantining...")
 
-
-        # Move invalid records
-        mysql_hook.run("""
-        INSERT INTO staging_db.flight_prices_quarantine
-        SELECT * FROM staging_db.flight_prices_raw
-        WHERE is_valid = FALSE;
-        """)
-
-        # Adding quarantine timestamp and reason summary
-        mysql_hook.run("""
-        UPDATE staging_db.flight_prices_quarantine
-        SET quarantine_timestamp = CURRENT_TIMESTAMP,
-            quarantine_reason_summary = LEFT(validation_message, 500);
-        """)
-
-        # Removing invalid data from main staging table
-        deleted = mysql_hook.run("""
-        DELETE FROM staging_db.flight_prices_raw
-        WHERE is_valid = FALSE;
-        """, handler=lambda cursor: cursor.rowcount)
-
-        logger.info(f"Moved {invalid_count:,} invalid records to quarantine table")
+        # Load quarantine operations (upsert + delete)
+        quarantine_ops = load_sql_statements('staging', 'quarantine_operations')
+        
+        # Execute upsert to quarantine (first statement)
+        mysql_hook.run(quarantine_ops[0], autocommit=True)
+        logger.info(f"Upserted {invalid_count:,} records to quarantine table")
+        
+        # Delete from raw table (second statement)
+        mysql_hook.run(quarantine_ops[1], autocommit=True)
+        logger.info(f"Removed invalid records from raw staging table")
+        
         logger.info(f"Clean staging table now contains {total_rows - invalid_count:,} valid records")
 
     # Push metrics for downstream tasks / monitoring

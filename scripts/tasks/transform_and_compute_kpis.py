@@ -1,5 +1,10 @@
+import sys
+sys.path.append('/opt/airflow/scripts')
+
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.mysql.hooks.mysql import MySqlHook
+from utils.sql_loader import load_sql_file, load_named_sql_queries
+from psycopg2.extras import execute_values
 import logging
 from datetime import datetime
 
@@ -7,27 +12,14 @@ logger = logging.getLogger(__name__)
 
 PEAK_SEASONS = {'Winter Holidays', 'Eid'}  
 
+
 def transform_and_compute_kpis(**context):
     mysql_hook = MySqlHook(mysql_conn_id='mysql_staging')
     pg_hook = PostgresHook(postgres_conn_id='postgres_analytics')
 
-    # 1. Get only valid records
-    df_query = """
-    SELECT 
-        id AS flight_price_id,
-        airline,
-        source AS source_iata,
-        destination AS destination_iata,
-        departure_date_time,
-        class,
-        seasonality,
-        days_before_departure,
-        base_fare_bdt,
-        tax_surcharge_bdt,
-        total_fare_bdt
-    FROM staging_db.flight_prices_raw
-    WHERE is_valid = TRUE
-    """
+    # 1. Load query from SQL file and get only valid records
+    staging_queries = load_named_sql_queries('staging', 'queries')
+    df_query = staging_queries['select_valid_records']
 
     logger.info("Reading clean data from MySQL staging...")
     df = mysql_hook.get_pandas_df(sql=df_query)
@@ -62,103 +54,62 @@ def transform_and_compute_kpis(**context):
     # Dropping temporary columns
     df = df.drop(columns=['total_fare_bdt__corrected', 'departure_date_time'])
 
-    # 3. Loading enriched data to PostgreSQL
-    pg_engine = pg_hook.get_sqlalchemy_engine()
+    # 3. Batch upsert to PostgreSQL using execute_values (much faster!)
+    logger.info("Upserting enriched records to fact_flight_prices...")
     
-    df.to_sql(
-        name='fact_flight_prices',
-        con=pg_engine,
-        # schema='analytics_db',
-        if_exists='append',
-        index=False,
-        chunksize=10000,
-        method='multi'
-    )
+    # Load batch upsert SQL from file
+    batch_upsert_sql = load_sql_file('analytics', 'upsert_fact_flight_prices')
+    
+    # Prepare data as list of tuples in correct column order
+    columns = [
+        'flight_price_id', 'airline', 'source_iata', 'destination_iata',
+        'departure_date', 'departure_month', 'departure_year', 'class',
+        'seasonality', 'is_peak_season', 'days_before_departure',
+        'base_fare_bdt', 'tax_surcharge_bdt', 'total_fare_bdt',
+        'ingestion_timestamp', 'batch_id'
+    ]
+    
+    # Convert to list of tuples
+    records = [tuple(row[col] for col in columns) for _, row in df.iterrows()]
+    
+    # Execute batch upsert
+    conn = pg_hook.get_conn()
+    cursor = conn.cursor()
+    
+    try:
+        batch_size = 5000
+        total_upserted = 0
+        
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i + batch_size]
+            execute_values(cursor, batch_upsert_sql, batch, page_size=batch_size)
+            conn.commit()
+            total_upserted += len(batch)
+            logger.info(f"Upserted batch: {total_upserted:,}/{len(records):,} records")
+        
+        logger.info(f"Upserted {len(df):,} enriched records to fact_flight_prices")
+    
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to upsert records: {str(e)}")
+        raise
+    finally:
+        cursor.close()
+        conn.close()
 
-    logger.info(f"Loaded {len(df):,} enriched records to fact_flight_prices")
-
-    # 4. Compute & upsert KPIs using PostgreSQL upsert pattern
-    upsert_queries = [
-        # Average Fare by Airline
-        """
-        INSERT INTO kpi_avg_fare_by_airline
-            (airline, avg_total_fare_bdt, record_count, last_updated)
-        SELECT 
-            airline,
-            ROUND(AVG(total_fare_bdt), 2),
-            COUNT(*),
-            CURRENT_TIMESTAMP
-        FROM fact_flight_prices
-        GROUP BY airline
-        ON CONFLICT (airline) 
-            DO UPDATE SET
-                avg_total_fare_bdt= EXCLUDED.avg_total_fare_bdt,
-                record_count = EXCLUDED.record_count,
-                last_updated = EXCLUDED.last_updated;
-        """,
-
-        # Seasonal Variation
-        """
-        INSERT INTO kpi_seasonal_variation
-            (seasonality, is_peak_season, avg_total_fare_bdt, record_count, last_updated)
-        SELECT 
-            seasonality,
-            is_peak_season,
-            ROUND(AVG(total_fare_bdt), 2),
-            COUNT(*),
-            CURRENT_TIMESTAMP
-        FROM fact_flight_prices
-        GROUP BY seasonality, is_peak_season
-        ON CONFLICT (seasonality, is_peak_season) 
-            DO UPDATE SET
-                avg_total_fare_bdt= EXCLUDED.avg_total_fare_bdt,
-                record_count = EXCLUDED.record_count,
-                last_updated = EXCLUDED.last_updated;
-        """,
-
-        # Booking Count by Airline (simple count of records)
-        """
-        INSERT INTO kpi_booking_count_by_airline
-            (airline, booking_count, last_updated)
-        SELECT 
-            airline,
-            COUNT(*),
-            CURRENT_TIMESTAMP
-        FROM fact_flight_prices
-        GROUP BY airline
-        ON CONFLICT (airline) 
-            DO UPDATE SET
-                booking_count = EXCLUDED.booking_count,
-                last_updated = EXCLUDED.last_updated;
-        """,
-
-        # Top Routes
-        """
-        INSERT INTO kpi_top_routes
-            (source_iata, destination_iata, route_name, booking_count, avg_total_fare_bdt, last_updated)
-        SELECT 
-            source_iata,
-            destination_iata,
-            CONCAT(source_iata, ' to ', destination_iata) AS route_name,
-            COUNT(*) AS booking_count,
-            ROUND(AVG(total_fare_bdt), 2) AS avg_total_fare_bdt,
-            CURRENT_TIMESTAMP
-        FROM fact_flight_prices
-        GROUP BY source_iata, destination_iata
-        ORDER BY booking_count DESC
-        LIMIT 20
-        ON CONFLICT (source_iata, destination_iata) 
-            DO UPDATE SET
-                booking_count = EXCLUDED.booking_count,
-                avg_total_fare_bdt= EXCLUDED.avg_total_fare_bdt,
-                route_name = EXCLUDED.route_name,
-                last_updated = EXCLUDED.last_updated;
-        """
+    # 4. Compute & upsert KPIs using PostgreSQL upsert pattern from SQL files
+    kpi_upsert_files = [
+        ('upsert_kpi_avg_fare_by_airline', 'Average Fare by Airline'),
+        ('upsert_kpi_seasonal_variation', 'Seasonal Variation'),
+        ('upsert_kpi_booking_count_by_airline', 'Booking Count by Airline'),
+        ('upsert_kpi_top_routes', 'Top Routes')
     ]
 
     logger.info("Computing and upserting KPI tables...")
-    for i, query in enumerate(upsert_queries, 1):
-        pg_hook.run(query)
-        logger.info(f"KPI upsert query {i}/{len(upsert_queries)} completed")
+    
+    for i, (sql_file, kpi_name) in enumerate(kpi_upsert_files, 1):
+        upsert_sql = load_sql_file('analytics', sql_file)
+        pg_hook.run(upsert_sql)
+        logger.info(f"KPI upsert {i}/{len(kpi_upsert_files)} completed: {kpi_name}")
 
     logger.info("Transformation & KPI computation finished successfully")

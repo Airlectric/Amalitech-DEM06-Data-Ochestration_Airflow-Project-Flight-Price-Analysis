@@ -106,6 +106,7 @@ services:
       - ./scripts:/opt/airflow/scripts
       - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
+      - ./sql:/opt/airflow/sql
     ports:
       - "${AIRFLOW_WEB_PORT}:8080"
     healthcheck:
@@ -155,6 +156,7 @@ services:
       - ./scripts:/opt/airflow/scripts
       - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
+      - ./sql:/opt/airflow/sql
 
   airflow-worker:
     image: custom-airflow:local
@@ -198,6 +200,7 @@ services:
       - ./scripts:/opt/airflow/scripts
       - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
+      - ./sql:/opt/airflow/sql
 
   airflow-dag-processor:
     image: custom-airflow:local
@@ -239,6 +242,7 @@ services:
       - ./scripts:/opt/airflow/scripts
       - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
+      - ./sql:/opt/airflow/sql
 
   airflow-init:
     image: custom-airflow:local
@@ -273,6 +277,7 @@ services:
       - ./scripts:/opt/airflow/scripts
       - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
+      - ./sql:/opt/airflow/sql
 
 volumes:
   postgres-db-volume:
