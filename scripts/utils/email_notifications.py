@@ -4,8 +4,8 @@ Email Notification Utility
 This module handles sending email alerts for the pipeline.
 I use this to notify when there are critical issues or to send validation summaries.
 
-Note: You need to configure SMTP settings in Airflow for this to work.
-Either set these in airflow.cfg or as environment variables:
+Uses direct SMTP connection instead of Airflow's send_email utility for reliability.
+Reads SMTP settings from environment variables:
 - AIRFLOW__SMTP__SMTP_HOST
 - AIRFLOW__SMTP__SMTP_PORT
 - AIRFLOW__SMTP__SMTP_USER
@@ -14,7 +14,11 @@ Either set these in airflow.cfg or as environment variables:
 """
 
 import logging
+import os
+import smtplib
 import time
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -28,38 +32,78 @@ MAX_EMAIL_RETRIES = 3
 RETRY_DELAY_SECONDS = 2
 
 
-def _get_email_function():
+def _get_smtp_config() -> Dict:
     """
-    Gets the Airflow send_email function if available.
-    Returns None if email is not configured or available.
+    Gets SMTP configuration from environment variables.
+    Returns a dict with host, port, user, password, and mail_from.
     """
+    return {
+        'host': os.environ.get('AIRFLOW__SMTP__SMTP_HOST', 'smtp.gmail.com'),
+        'port': int(os.environ.get('AIRFLOW__SMTP__SMTP_PORT', 587)),
+        'user': os.environ.get('AIRFLOW__SMTP__SMTP_USER', ''),
+        'password': os.environ.get('AIRFLOW__SMTP__SMTP_PASSWORD', ''),
+        'mail_from': os.environ.get('AIRFLOW__SMTP__SMTP_MAIL_FROM', ''),
+        'starttls': os.environ.get('AIRFLOW__SMTP__SMTP_STARTTLS', 'True').lower() == 'true',
+    }
+
+
+def _send_email_smtp(recipients: List[str], subject: str, html_content: str) -> bool:
+    """
+    Sends an email using direct SMTP connection.
+    This bypasses Airflow's send_email utility for better reliability with Gmail.
+    """
+    config = _get_smtp_config()
+    
+    if not config['user'] or not config['password']:
+        logger.warning("SMTP credentials not configured, skipping email")
+        return False
+    
+    # Build the email message
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From'] = config['mail_from'] or config['user']
+    msg['To'] = ', '.join(recipients)
+    
+    # Attach HTML content
+    html_part = MIMEText(html_content, 'html')
+    msg.attach(html_part)
+    
     try:
-        from airflow.utils.email import send_email
-        return send_email
-    except ImportError:
-        logger.warning("Airflow email utility not available")
-        return None
+        # Connect and send
+        server = smtplib.SMTP(config['host'], config['port'], timeout=30)
+        server.ehlo()
+        
+        if config['starttls']:
+            server.starttls()
+            server.ehlo()
+        
+        server.login(config['user'], config['password'])
+        server.sendmail(config['mail_from'] or config['user'], recipients, msg.as_string())
+        server.quit()
+        
+        logger.info(f"Email sent successfully to {recipients}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to send email: {str(e)}")
+        raise
 
 
-def _send_with_retry(send_func, recipients: List[str], subject: str, html_content: str) -> bool:
+def _send_with_retry(recipients: List[str], subject: str, html_content: str) -> bool:
     """
     Attempts to send an email with retries.
-    Sometimes Gmail SMTP connections get flaky, so retrying helps.
+    Sometimes SMTP connections can be flaky, so retrying helps.
     """
     last_error = None
     
     for attempt in range(1, MAX_EMAIL_RETRIES + 1):
         try:
-            send_func(
-                to=recipients,
-                subject=subject,
-                html_content=html_content
-            )
-            logger.info(f"Email sent successfully to {recipients} (attempt {attempt})")
-            return True
+            return _send_email_smtp(recipients, subject, html_content)
         except Exception as e:
+            error_str = str(e)
             last_error = e
-            logger.warning(f"Email attempt {attempt}/{MAX_EMAIL_RETRIES} failed: {str(e)}")
+            logger.warning(f"Email attempt {attempt}/{MAX_EMAIL_RETRIES} failed: {error_str}")
+            
             if attempt < MAX_EMAIL_RETRIES:
                 time.sleep(RETRY_DELAY_SECONDS)
     
@@ -86,11 +130,6 @@ def send_validation_summary_email(
     Returns:
         True if email sent successfully, False otherwise
     """
-    send_email = _get_email_function()
-    if send_email is None:
-        logger.info("Email not configured, skipping validation summary email")
-        return False
-    
     recipients = recipients or DEFAULT_ALERT_RECIPIENTS
     if not recipients:
         logger.info("No recipients configured for validation summary email")
@@ -156,7 +195,7 @@ def send_validation_summary_email(
     """
     
     try:
-        return _send_with_retry(send_email, recipients, subject, html_content)
+        return _send_with_retry(recipients, subject, html_content)
     except Exception as e:
         logger.error(f"Failed to send validation summary email: {str(e)}")
         return False
@@ -183,11 +222,6 @@ def send_critical_alert_email(
     Returns:
         True if email sent successfully, False otherwise
     """
-    send_email = _get_email_function()
-    if send_email is None:
-        logger.info("Email not configured, skipping critical alert email")
-        return False
-    
     recipients = recipients or DEFAULT_ALERT_RECIPIENTS
     if not recipients:
         logger.info("No recipients configured for critical alert email")
@@ -237,7 +271,7 @@ def send_critical_alert_email(
     """
     
     try:
-        return _send_with_retry(send_email, recipients, subject, html_content)
+        return _send_with_retry(recipients, subject, html_content)
     except Exception as e:
         logger.error(f"Failed to send critical alert email: {str(e)}")
         return False

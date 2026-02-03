@@ -1,0 +1,43 @@
+flowchart LR
+    subgraph Source["Data Source"]
+        CSV[("📁 CSV Files")]
+    end
+
+    subgraph Airflow["Apache Airflow"]
+        direction TB
+        A1["Scheduler"]
+        A2["Worker"]
+        A3["Redis"]
+    end
+
+    subgraph ETL["ETL Pipeline"]
+        direction TB
+        E1["1. Validate & Ingest"]
+        E2["2. Transform & Load"]
+        E3["3. Compute KPIs"]
+        E1 --> E2 --> E3
+    end
+
+    subgraph Storage["Databases"]
+        direction TB
+        subgraph MySQL["MySQL Staging"]
+            M1["flight_prices_raw"]
+            M2["flight_prices_quarantine"]
+        end
+        subgraph Postgres["PostgreSQL Analytics"]
+            P1["fact_flight_prices"]
+            P2["KPI Tables"]
+        end
+    end
+
+    subgraph Output["Output"]
+        direction TB
+        O1["📧 Email Alerts"]
+        O2["📦 Archived Files"]
+    end
+
+    CSV --> Airflow
+    Airflow --> ETL
+    ETL --> MySQL
+    ETL --> Postgres
+    ETL --> Output
