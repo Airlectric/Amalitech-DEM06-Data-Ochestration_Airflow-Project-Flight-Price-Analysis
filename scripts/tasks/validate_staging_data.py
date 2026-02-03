@@ -18,10 +18,11 @@ from airflow.exceptions import AirflowSkipException, AirflowException
 from dotenv import load_dotenv
 
 # Importing my modular utilities
-from utils.dataset_tracker import get_unprocessed_datasets, mark_as_processed
+from utils.dataset_tracker import get_unprocessed_datasets, archive_processed_file
 from utils.csv_reader import read_flight_price_csv
 from utils.data_validator import validate_dataframe
 from utils.db_operations import insert_to_staging, insert_to_quarantine
+from utils.email_notifications import send_validation_summary_email, send_critical_alert_email
 
 load_dotenv()
 
@@ -33,6 +34,10 @@ DATA_BASE_PATH = Path(os.environ.get('AIRFLOW_DATA_PATH', '/opt/airflow/data'))
 # If more than 90% of records are invalid, something is seriously wrong
 CATASTROPHIC_THRESHOLD = 0.90
 
+# Email recipients for alerts - set via environment variable or leave empty to disable
+ALERT_RECIPIENTS = os.environ.get('ALERT_EMAIL_RECIPIENTS', '').split(',')
+ALERT_RECIPIENTS = [email.strip() for email in ALERT_RECIPIENTS if email.strip()]
+
 
 def validate_staging_data(**context):
     """
@@ -43,10 +48,11 @@ def validate_staging_data(**context):
     2. Read and preprocess the CSV
     3. Validate all records in memory
     4. Insert valid records to staging, invalid to quarantine
-    5. Mark file as processed and push metrics
+    5. Archive the processed file and push metrics
+    6. Send email notifications if configured
     """
     # First, let me find a dataset to process
-    csv_path, processed_files = get_unprocessed_datasets(DATA_BASE_PATH)
+    csv_path, archive_path = get_unprocessed_datasets(DATA_BASE_PATH)
     
     if csv_path is None:
         raise AirflowSkipException("No unprocessed datasets found. Skipping this run.")
@@ -68,6 +74,16 @@ def validate_staging_data(**context):
     
     logger.info(f"Validation complete. Valid: {valid_count:,}, Invalid: {invalid_count:,} ({invalid_pct}%)")
     
+    # Building the validation summary for XCom and email
+    validation_summary = {
+        'file_name': csv_path.name,
+        'total_rows': total_rows,
+        'valid_rows': valid_count,
+        'invalid_count': invalid_count,
+        'invalid_pct': invalid_pct,
+        'quarantined': invalid_count > 0
+    }
+    
     # Handling invalid records first by sending them to quarantine
     if invalid_count > 0:
         logger.warning(f"Found {invalid_count:,} invalid records, sending them to quarantine...")
@@ -82,25 +98,45 @@ def validate_staging_data(**context):
             exclude_columns=['quarantine_timestamp', 'quarantine_reason_summary']
         )
     
-    # Marking this file as processed so I don't process it again
-    mark_as_processed(csv_path.name, processed_files)
+    # Archiving the processed file so it doesn't get processed again
+    # This is better than just tracking by name because if a new file comes in with the same name,
+    # it will be treated as a new file
+    archive_processed_file(csv_path)
     
     # Pushing metrics to XCom so downstream tasks can use them
-    context['ti'].xcom_push(key='validation_summary', value={
-        'file_name': csv_path.name,
-        'total_rows': total_rows,
-        'valid_rows': valid_count,
-        'invalid_count': invalid_count,
-        'invalid_pct': invalid_pct,
-        'quarantined': invalid_count > 0
-    })
+    context['ti'].xcom_push(key='validation_summary', value=validation_summary)
+    
+    # Getting context info for emails
+    dag_id = context.get('dag').dag_id if context.get('dag') else None
+    run_id = context.get('run_id')
     
     # If almost everything is bad, something is seriously wrong with the source data
     if invalid_pct > CATASTROPHIC_THRESHOLD * 100:
-        raise AirflowException(
+        error_message = (
             f"CRITICAL: {invalid_pct}% of records invalid! "
             f"Pipeline stopped to prevent processing completely broken data. "
             f"Check source file and ingestion logic."
+        )
+        
+        # Sending critical alert email before raising exception
+        if ALERT_RECIPIENTS:
+            send_critical_alert_email(
+                error_message=error_message,
+                summary=validation_summary,
+                recipients=ALERT_RECIPIENTS,
+                dag_id=dag_id,
+                run_id=run_id
+            )
+        
+        raise AirflowException(error_message)
+    
+    # Sending validation summary email if recipients are configured
+    if ALERT_RECIPIENTS:
+        send_validation_summary_email(
+            summary=validation_summary,
+            recipients=ALERT_RECIPIENTS,
+            dag_id=dag_id,
+            run_id=run_id
         )
     
     # Logging the final status
