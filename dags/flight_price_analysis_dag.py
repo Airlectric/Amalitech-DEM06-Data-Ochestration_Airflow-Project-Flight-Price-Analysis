@@ -6,7 +6,7 @@ from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
-from tasks.ingest_csv_to_mysql import ingest_csv_to_mysql
+# I removed the old ingest_csv_to_mysql import since validation now handles both validation and ingestion
 from tasks.validate_staging_data import validate_staging_data
 from tasks.transform_and_compute_kpis import transform_and_compute_kpis
 
@@ -22,7 +22,7 @@ default_args = {
 with DAG(
     dag_id='flight_price_analysis_bangladesh',
     default_args=default_args,
-    description='End-to-end pipeline: Ingest -> Validate -> Transform -> Load & Compute KPIs',
+    description='End-to-end pipeline: Validate & Ingest -> Transform -> Load & Compute KPIs',
     schedule=None,              # Using Manual trigger for now for now, but '@daily' is an option
     start_date=datetime(2025, 3, 1),
     catchup=False,
@@ -35,13 +35,10 @@ with DAG(
         python_callable=lambda: print("Starting Flight Price Analysis Pipeline"),
     )
 
-    ingest = PythonOperator(
-        task_id='ingest_csv_to_mysql',
-        python_callable=ingest_csv_to_mysql,
-    )
-
-    validate = PythonOperator(
-        task_id='validate_staging_data',
+    # This task now does validation FIRST, then inserts valid data to staging and invalid to quarantine
+    # It also automatically finds the most recent unprocessed dataset instead of hardcoding the path
+    validate_and_ingest = PythonOperator(
+        task_id='validate_and_ingest_data',
         python_callable=validate_staging_data,
     )
 
@@ -55,5 +52,5 @@ with DAG(
         python_callable=lambda: print("Pipeline completed successfully!"),
     )
 
-    # Dependencies - the real flow
-    start >> ingest >> validate >> transform_and_kpis >> finish
+    # The new flow: validate first, only valid data goes to staging, then transform
+    start >> validate_and_ingest >> transform_and_kpis >> finish
