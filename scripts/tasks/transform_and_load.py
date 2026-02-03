@@ -1,8 +1,17 @@
+"""
+Transform and Load Data Task
+
+This task handles transforming the validated staging data and loading it into the 
+PostgreSQL analytics fact table. The KPI computations are handled by separate tasks
+that run in parallel after this one completes.
+"""
+
 import sys
 sys.path.append('/opt/airflow/scripts')
 
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.mysql.hooks.mysql import MySqlHook
+from airflow.exceptions import AirflowSkipException
 from utils.sql_loader import load_sql_file, load_named_sql_queries
 from psycopg2.extras import execute_values
 import logging
@@ -10,14 +19,19 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-PEAK_SEASONS = {'Winter Holidays', 'Eid'}  
+# These are the seasons I consider as peak travel periods
+PEAK_SEASONS = {'Winter Holidays', 'Eid'}
 
 
-def transform_and_compute_kpis(**context):
+def transform_and_load_to_analytics(**context):
+    """
+    Transforms validated staging data and loads it into the PostgreSQL analytics fact table.
+    This is the first step before KPI computations can run.
+    """
     mysql_hook = MySqlHook(mysql_conn_id='mysql_staging')
     pg_hook = PostgresHook(postgres_conn_id='postgres_analytics')
 
-    # 1. Load query from SQL file and get only valid records
+    # Loading query from SQL file to get only valid records
     staging_queries = load_named_sql_queries('staging', 'queries')
     df_query = staging_queries['select_valid_records']
 
@@ -26,41 +40,40 @@ def transform_and_compute_kpis(**context):
 
     if df.empty:
         logger.warning("No valid records found in staging. Skipping transformation.")
-        return
+        raise AirflowSkipException("No valid records to transform")
 
     logger.info(f"Processing {len(df):,} valid records")
 
-    # 2. Core transformations
+    # Running my core transformations
     df = df.assign(
-        # Ensuring total_fare is corrected
-        total_fare_bdt__corrected = lambda x: x['base_fare_bdt'] + x['tax_surcharge_bdt'],
+        # Making sure total_fare is calculated correctly
+        total_fare_bdt__corrected=lambda x: x['base_fare_bdt'] + x['tax_surcharge_bdt'],
         
-        # Fix potential data issues
-        total_fare_bdt= lambda x: x['total_fare_bdt__corrected'],  # overwriting with corrected
+        # Overwriting with the corrected value
+        total_fare_bdt=lambda x: x['total_fare_bdt__corrected'],
         
-        # Date dimensions
-        departure_date  = lambda x: x['departure_date_time'].dt.date,
-        departure_month = lambda x: x['departure_date_time'].dt.month,
-        departure_year  = lambda x: x['departure_date_time'].dt.year,
+        # Breaking down the date into useful dimensions
+        departure_date=lambda x: x['departure_date_time'].dt.date,
+        departure_month=lambda x: x['departure_date_time'].dt.month,
+        departure_year=lambda x: x['departure_date_time'].dt.year,
         
-        # Peak season flag
-        is_peak_season = lambda x: x['seasonality'].isin(PEAK_SEASONS),
+        # Flagging peak season records for easier analysis
+        is_peak_season=lambda x: x['seasonality'].isin(PEAK_SEASONS),
         
-        # Batch traceability
-        batch_id = context['run_id'],
-        ingestion_timestamp = datetime.utcnow()
+        # Adding batch traceability so I can track which run inserted these records
+        batch_id=context['run_id'],
+        ingestion_timestamp=datetime.utcnow()
     )
 
-    # Dropping temporary columns
+    # Cleaning up the temporary column
     df = df.drop(columns=['total_fare_bdt__corrected', 'departure_date_time'])
 
-    # 3. Batch upsert to PostgreSQL using execute_values (much faster!)
+    # Batch upserting to PostgreSQL using execute_values for better performance
     logger.info("Upserting enriched records to fact_flight_prices...")
     
-    # Load batch upsert SQL from file
     batch_upsert_sql = load_sql_file('analytics', 'upsert_fact_flight_prices')
     
-    # Prepare data as list of tuples in correct column order
+    # Setting up the columns in the order the SQL expects them
     columns = [
         'flight_price_id', 'airline', 'source_iata', 'destination_iata',
         'departure_date', 'departure_month', 'departure_year', 'class',
@@ -69,10 +82,9 @@ def transform_and_compute_kpis(**context):
         'ingestion_timestamp', 'batch_id'
     ]
     
-    # Convert to list of tuples
+    # Converting to list of tuples for execute_values
     records = [tuple(row[col] for col in columns) for _, row in df.iterrows()]
     
-    # Execute batch upsert
     conn = pg_hook.get_conn()
     cursor = conn.cursor()
     
@@ -87,7 +99,7 @@ def transform_and_compute_kpis(**context):
             total_upserted += len(batch)
             logger.info(f"Upserted batch: {total_upserted:,}/{len(records):,} records")
         
-        logger.info(f"Upserted {len(df):,} enriched records to fact_flight_prices")
+        logger.info(f"Successfully loaded {len(df):,} records to fact_flight_prices")
     
     except Exception as e:
         conn.rollback()
@@ -97,19 +109,7 @@ def transform_and_compute_kpis(**context):
         cursor.close()
         conn.close()
 
-    # 4. Compute & upsert KPIs using PostgreSQL upsert pattern from SQL files
-    kpi_upsert_files = [
-        ('upsert_kpi_avg_fare_by_airline', 'Average Fare by Airline'),
-        ('upsert_kpi_seasonal_variation', 'Seasonal Variation'),
-        ('upsert_kpi_booking_count_by_airline', 'Booking Count by Airline'),
-        ('upsert_kpi_top_routes', 'Top Routes')
-    ]
-
-    logger.info("Computing and upserting KPI tables...")
+    # Pushing record count to XCom so downstream KPI tasks know there's data to process
+    context['ti'].xcom_push(key='records_loaded', value=len(df))
     
-    for i, (sql_file, kpi_name) in enumerate(kpi_upsert_files, 1):
-        upsert_sql = load_sql_file('analytics', sql_file)
-        pg_hook.run(upsert_sql)
-        logger.info(f"KPI upsert {i}/{len(kpi_upsert_files)} completed: {kpi_name}")
-
-    logger.info("Transformation & KPI computation finished successfully")
+    return len(df)
