@@ -20,11 +20,14 @@ CREATE TABLE IF NOT EXISTS staging_db.flight_prices_raw (
     days_before_departure INT                 NOT NULL,
     
     ingestion_timestamp   TIMESTAMP           DEFAULT CURRENT_TIMESTAMP,
-    file_name             VARCHAR(255),
-    source_row_number     BIGINT,
+    file_name             VARCHAR(255)        NOT NULL,
+    source_row_number     BIGINT              NOT NULL,
     
     is_valid              BOOLEAN             DEFAULT TRUE,
     validation_message    TEXT,
+    
+    -- This unique constraint prevents duplicate records from the same file
+    UNIQUE KEY uk_file_row (file_name, source_row_number),
     
     INDEX idx_route       (source, destination),
     INDEX idx_departure   (departure_date_time),

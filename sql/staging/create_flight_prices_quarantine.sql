@@ -1,7 +1,7 @@
 -- Create flight_prices_quarantine table in MySQL staging database
 CREATE TABLE IF NOT EXISTS staging_db.flight_prices_quarantine (
     -- Same structure as raw table + quarantine-specific columns
-    id                    BIGINT,
+    id                    BIGINT AUTO_INCREMENT PRIMARY KEY,
     airline               VARCHAR(100)        NOT NULL,
     source                VARCHAR(10)         NOT NULL,
     source_name           VARCHAR(150),
@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS staging_db.flight_prices_quarantine (
     batch_id                   VARCHAR(50),    -- optional: run_id or date
     quarantine_notes           TEXT,           -- for manual comments later
     
-    PRIMARY KEY (id),
+    -- Using file_name + source_row_number as the unique key since we don't have id from raw table anymore
+    UNIQUE KEY uk_file_row (file_name, source_row_number),
+    
     INDEX idx_quarantine_ts (quarantine_timestamp),
     INDEX idx_reason        (quarantine_reason_summary(100))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
